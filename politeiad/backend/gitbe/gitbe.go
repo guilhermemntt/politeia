@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,6 +132,54 @@ type gitBackEnd struct {
 	testAnchors map[string]bool // [digest]anchored
 }
 
+func pijoin(elements ...string) string {
+	return filepath.Join(elements...)
+}
+
+func join(elements ...string) string {
+	panic(filepath.Join(elements...))
+}
+
+// _joinLatest joins the provided path elements and adds the latest version of
+// the provided directory.
+func _joinLatest(elements ...string) (string, error) {
+	dir := filepath.Join(elements...)
+
+	files, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+
+	if len(files) == 0 {
+		return "", os.ErrNotExist
+	}
+
+	// We expect only numeric filenames
+	versions := make([]int, 0, len(files))
+	for _, v := range files {
+		u, err := strconv.ParseInt(v.Name(), 10, 64)
+		if err != nil {
+			return "", err
+		}
+		versions = append(versions, int(u))
+	}
+	sort.Ints(versions)
+
+	return filepath.Join(dir,
+		strconv.FormatInt(int64(versions[len(versions)-1]), 10)), nil
+}
+
+// joinLatest joins the provided path elements and adds the latest version of
+// the provided directory. This function panic when it errors out, this is by
+// design in order to find all incorrect invocations.
+func joinLatest(elements ...string) string {
+	path, err := _joinLatest(elements...)
+	if err != nil {
+		panic(err)
+	}
+	return path
+}
+
 // extendSHA1 appends 0 to make a SHA1 the size of a SHA256 digest.
 func extendSHA1(d []byte) []byte {
 	if len(d) != sha1.Size {
@@ -167,47 +216,6 @@ func extendSHA1FromString(s string) (string, error) {
 	}
 	d := extendSHA1(ds)
 	return hex.EncodeToString(d), nil
-}
-
-// newUniqueID returns a new unique record ID.  The function will hold the
-// unvettedLock if successful.  The callee is responsible for releasing the
-// lock.
-//
-// This function must be called without holding the unvetted lock.
-func (g *gitBackEnd) newUniqueID() (uint64, error) {
-	g.Lock()
-
-	// Get Dirs.
-	files, err := ioutil.ReadDir(g.unvetted)
-	if err != nil {
-		return 0, err
-	}
-
-	// Find biggest record ID
-	var last uint64
-	for _, file := range files {
-		// This check ignores lockFilename as well
-		if !file.IsDir() {
-			continue
-		}
-		p, err := strconv.ParseUint(file.Name(), 10, 64)
-		if err != nil {
-			continue
-		}
-		if p > last {
-			last = p
-		}
-	}
-	id := last + 1
-
-	// Create directory
-	err = os.MkdirAll(filepath.Join(g.unvetted, strconv.FormatUint(id, 10)),
-		0774)
-	if err != nil {
-		return 0, err
-	}
-
-	return id, nil
 }
 
 // verifyContent verifies that all provided backend.MetadataStream and
@@ -380,7 +388,7 @@ func verifyContent(metadata []backend.MetadataStream, files []backend.File, file
 // This function must be called with the lock held.
 func loadRecord(path, id string) ([]backend.File, error) {
 	// Get dir.
-	recordDir := filepath.Join(path, id, defaultPayloadDir)
+	recordDir := pijoin(joinLatest(path, id), defaultPayloadDir)
 	files, err := ioutil.ReadDir(recordDir)
 	if err != nil {
 		return nil, err
@@ -389,7 +397,7 @@ func loadRecord(path, id string) ([]backend.File, error) {
 	bf := make([]backend.File, 0, len(files))
 	// Load all files
 	for _, file := range files {
-		fn := filepath.Join(recordDir, file.Name())
+		fn := pijoin(recordDir, file.Name())
 		if file.IsDir() {
 			return nil, fmt.Errorf("record corrupt: %v", path)
 		}
@@ -408,8 +416,8 @@ func loadRecord(path, id string) ([]backend.File, error) {
 // mdFilename generates the proper filename for a specified repo + proposal and
 // metadata stream.
 func mdFilename(path, id string, mdID int) string {
-	return filepath.Join(path, id, strconv.FormatUint(uint64(mdID), 10)+
-		defaultMDFilenameSuffix)
+	return pijoin(joinLatest(path, id),
+		strconv.FormatUint(uint64(mdID), 10)+defaultMDFilenameSuffix)
 }
 
 // loadMDStreams loads all streams of disk.  It returns an array of
@@ -418,7 +426,7 @@ func mdFilename(path, id string, mdID int) string {
 // This function must be called with the lock held.
 func loadMDStreams(path, id string) ([]backend.MetadataStream, error) {
 	// Get dir.
-	dir := filepath.Join(path, id)
+	dir := joinLatest(path, id)
 	files, err := ioutil.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -439,7 +447,7 @@ func loadMDStreams(path, id string) ([]backend.MetadataStream, error) {
 		}
 
 		// Load metadata stream
-		fn := filepath.Join(dir, v.Name())
+		fn := pijoin(dir, v.Name())
 		md, err := ioutil.ReadFile(fn)
 		if err != nil {
 			return nil, err
@@ -458,7 +466,7 @@ func loadMDStreams(path, id string) ([]backend.MetadataStream, error) {
 //
 // This function should be called with the lock held.
 func loadMD(path, id string) (*backend.RecordMetadata, error) {
-	filename := filepath.Join(path, id,
+	filename := pijoin(joinLatest(path, id),
 		defaultRecordMetadataFilename)
 	f, err := os.Open(filename)
 	if err != nil {
@@ -506,7 +514,7 @@ func createMD(path, id string, status backend.MDStatusT, iteration uint64, hashe
 // This function should be called with the lock held.
 func updateMD(path, id string, brm *backend.RecordMetadata) error {
 	// Store metadata record.
-	filename := filepath.Join(path, id, defaultRecordMetadataFilename)
+	filename := pijoin(joinLatest(path, id), defaultRecordMetadataFilename)
 	f, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -521,7 +529,7 @@ func updateMD(path, id string, brm *backend.RecordMetadata) error {
 // This function should be called with the lock held.
 func (g *gitBackEnd) commitMD(path, id, msg string) error {
 	// git add id/brm.json
-	filename := filepath.Join(path, id,
+	filename := pijoin(joinLatest(path, id),
 		defaultRecordMetadataFilename)
 	err := g.gitAdd(path, filename)
 	if err != nil {
@@ -636,7 +644,7 @@ func (g *gitBackEnd) anchor(digests []*[sha256.Size]byte) error {
 
 // appendAuditTrail adds a record to the audit trail.
 func (g *gitBackEnd) appendAuditTrail(path string, ts int64, merkle [sha256.Size]byte, lines []string) error {
-	f, err := os.OpenFile(filepath.Join(path, defaultAuditTrailFile),
+	f, err := os.OpenFile(pijoin(path, defaultAuditTrailFile),
 		os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		return err
@@ -890,7 +898,7 @@ func (g *gitBackEnd) afterAnchorVerify(vrs []v1.VerifyDigest) error {
 		// directory anchor.
 		// In Vetted in the record directory add a file called anchor
 		// that points to the TX id.
-		anchorDir := filepath.Join(g.vetted, defaultAnchorsDirectory)
+		anchorDir := pijoin(g.vetted, defaultAnchorsDirectory)
 		err = os.MkdirAll(anchorDir, 0774)
 		if err != nil {
 			return err
@@ -899,13 +907,13 @@ func (g *gitBackEnd) afterAnchorVerify(vrs []v1.VerifyDigest) error {
 		if err != nil {
 			return err
 		}
-		err = ioutil.WriteFile(filepath.Join(anchorDir, vr.Digest),
+		err = ioutil.WriteFile(pijoin(anchorDir, vr.Digest),
 			ar, 0664)
 		if err != nil {
 			return err
 		}
 		err = g.gitAdd(g.vetted,
-			filepath.Join(defaultAnchorsDirectory, vr.Digest))
+			pijoin(defaultAnchorsDirectory, vr.Digest))
 		if err != nil {
 			return err
 		}
@@ -1009,7 +1017,7 @@ func (g *gitBackEnd) newRecord(token []byte, metadata []backend.MetadataStream, 
 	}
 
 	// Process files.
-	path := filepath.Join(g.unvetted, id, defaultPayloadDir)
+	path := pijoin(g.unvetted, id, "0", defaultPayloadDir)
 	err = os.MkdirAll(path, 0774)
 	if err != nil {
 		return nil, err
@@ -1018,7 +1026,7 @@ func (g *gitBackEnd) newRecord(token []byte, metadata []backend.MetadataStream, 
 	hashes := make([]*[sha256.Size]byte, 0, len(fa))
 	for i := range fa {
 		// Copy files into directory id/payload/filename.
-		filename := filepath.Join(path, fa[i].name)
+		filename := pijoin(path, fa[i].name)
 		err = ioutil.WriteFile(filename, fa[i].payload, 0664)
 		if err != nil {
 			return nil, err
@@ -1032,13 +1040,13 @@ func (g *gitBackEnd) newRecord(token []byte, metadata []backend.MetadataStream, 
 		if err != nil {
 			return nil, err
 		}
-
 	}
 
 	// Save all metadata streams
 	for i := range metadata {
-		filename := filepath.Join(g.unvetted, id, fmt.Sprintf("%02v%v",
-			metadata[i].ID, defaultMDFilenameSuffix))
+		filename := pijoin(joinLatest(g.unvetted, id),
+			fmt.Sprintf("%02v%v", metadata[i].ID,
+				defaultMDFilenameSuffix))
 		err = ioutil.WriteFile(filename, []byte(metadata[i].Payload),
 			0664)
 		if err != nil {
@@ -1058,8 +1066,9 @@ func (g *gitBackEnd) newRecord(token []byte, metadata []backend.MetadataStream, 
 		return nil, err
 	}
 
-	// git add id/recordmetadata.json
-	filename := filepath.Join(g.unvetted, id, defaultRecordMetadataFilename)
+	// git add id/version/recordmetadata.json
+	filename := pijoin(joinLatest(g.unvetted, id),
+		defaultRecordMetadataFilename)
 	err = g.gitAdd(g.unvetted, filename)
 	if err != nil {
 		return nil, err
@@ -1140,8 +1149,9 @@ func (g *gitBackEnd) New(metadata []backend.MetadataStream, files []backend.File
 func (g *gitBackEnd) updateMetadata(id string, mdAppend, mdOverwrite []backend.MetadataStream) error {
 	// Overwrite metadata
 	for i := range mdOverwrite {
-		filename := filepath.Join(g.unvetted, id, fmt.Sprintf("%02v%v",
-			mdOverwrite[i].ID, defaultMDFilenameSuffix))
+		filename := pijoin(joinLatest(g.unvetted, id),
+			fmt.Sprintf("%02v%v", mdOverwrite[i].ID,
+				defaultMDFilenameSuffix))
 		err := ioutil.WriteFile(filename, []byte(mdOverwrite[i].Payload),
 			0664)
 		if err != nil {
@@ -1156,8 +1166,9 @@ func (g *gitBackEnd) updateMetadata(id string, mdAppend, mdOverwrite []backend.M
 
 	// Append metadata
 	for i := range mdAppend {
-		filename := filepath.Join(g.unvetted, id, fmt.Sprintf("%02v%v",
-			mdAppend[i].ID, defaultMDFilenameSuffix))
+		filename := pijoin(joinLatest(g.unvetted, id),
+			fmt.Sprintf("%02v%v", mdAppend[i].ID,
+				defaultMDFilenameSuffix))
 		f, err := os.OpenFile(filename,
 			os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 		if err != nil {
@@ -1203,7 +1214,7 @@ func (g *gitBackEnd) checkoutRecordBranch(id string) (bool, error) {
 		}
 	} else {
 		// Branch does not exist, create it if record exists
-		fi, err := os.Stat(filepath.Join(g.unvetted, id))
+		fi, err := os.Stat(pijoin(g.unvetted, id))
 		if err != nil {
 			if os.IsNotExist(err) {
 				return false, backend.ErrRecordNotFound
@@ -1255,7 +1266,7 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 
 	// Verify all deletes before executing
 	for _, v := range filesDel {
-		fi, err := os.Stat(filepath.Join(g.unvetted, id,
+		fi, err := os.Stat(pijoin(joinLatest(g.unvetted, id),
 			defaultPayloadDir, v))
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -1271,10 +1282,10 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 	}
 
 	// At this point we should be ready to add/remove/update all the things.
-	path := filepath.Join(g.unvetted, id, defaultPayloadDir)
+	path := pijoin(joinLatest(g.unvetted, id), defaultPayloadDir)
 	for i := range fa {
 		// Copy files into directory id/payload/filename.
-		filename := filepath.Join(path, fa[i].name)
+		filename := pijoin(path, fa[i].name)
 		err = ioutil.WriteFile(filename, fa[i].payload, 0664)
 		if err != nil {
 			return nil, err
@@ -1289,11 +1300,12 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 
 	// Delete files
 	for _, v := range filesDel {
-		err = g.gitRm(g.unvetted, filepath.Join(id, defaultPayloadDir,
-			v))
-		if err != nil {
-			return nil, err
-		}
+		panic("FIXME " + v) // XXX
+		//err = g.gitRm(g.unvetted, join(id, defaultPayloadDir,
+		//	v))
+		//if err != nil {
+		//	return nil, err
+		//}
 	}
 
 	// Handle metadata
@@ -1304,7 +1316,7 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 
 	// Find all hashes
 	hashes := make([]*[sha256.Size]byte, 0, len(fa))
-	ppath := filepath.Join(g.unvetted, id, defaultPayloadDir)
+	ppath := pijoin(joinLatest(g.unvetted, id), defaultPayloadDir)
 	newRecordFiles, err := ioutil.ReadDir(ppath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1315,7 +1327,7 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 		return nil, err
 	}
 	for _, v := range newRecordFiles {
-		digest, err := util.DigestFileBytes(filepath.Join(ppath,
+		digest, err := util.DigestFileBytes(pijoin(ppath,
 			v.Name()))
 		if err != nil {
 			return nil, err
@@ -1343,7 +1355,8 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 	}
 
 	// git add id/recordmetadata.json
-	filename := filepath.Join(g.unvetted, id, defaultRecordMetadataFilename)
+	filename := pijoin(joinLatest(g.unvetted, id),
+		defaultRecordMetadataFilename)
 	err = g.gitAdd(g.unvetted, filename)
 	if err != nil {
 		return nil, err
@@ -1495,7 +1508,7 @@ func (g *gitBackEnd) UpdateVettedMetadata(token []byte, mdAppend []backend.Metad
 	idTmp := id + "_tmp"
 
 	// Make sure vetted exists
-	_, err = os.Stat(filepath.Join(g.unvetted, id))
+	_, err = os.Stat(pijoin(g.unvetted, id))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return backend.ErrRecordNotFound
