@@ -140,11 +140,9 @@ func join(elements ...string) string {
 	panic(filepath.Join(elements...))
 }
 
-// _joinLatest joins the provided path elements and adds the latest version of
-// the provided directory.
-func _joinLatest(elements ...string) (string, error) {
-	dir := filepath.Join(elements...)
-
+// getLatest returns the latest version as a string.
+// This function must be called with the lock held.
+func getLatest(dir string) (string, error) {
 	files, err := ioutil.ReadDir(dir)
 	if err != nil {
 		return "", err
@@ -165,8 +163,18 @@ func _joinLatest(elements ...string) (string, error) {
 	}
 	sort.Ints(versions)
 
-	return filepath.Join(dir,
-		strconv.FormatInt(int64(versions[len(versions)-1]), 10)), nil
+	return strconv.FormatInt(int64(versions[len(versions)-1]), 10), nil
+}
+
+// _joinLatest joins the provided path elements and adds the latest version of
+// the provided directory.
+func _joinLatest(elements ...string) (string, error) {
+	dir := pijoin(elements...)
+	v, err := getLatest(dir)
+	if err != nil {
+		return "", err
+	}
+	return pijoin(dir, v), nil
 }
 
 // joinLatest joins the provided path elements and adds the latest version of
@@ -1249,6 +1257,12 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 
 	// We now are sitting in branch id
 
+	// Get version for relative git rm command later.
+	version, err := getLatest(pijoin(g.unvetted, id))
+	if err != nil {
+		return nil, err
+	}
+
 	// Load MD
 	log.Tracef("updating %x", token)
 	brm, err := loadMD(g.unvetted, id)
@@ -1299,13 +1313,12 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 	}
 
 	// Delete files
+	relativeRmDir := pijoin(id, version, defaultPayloadDir)
 	for _, v := range filesDel {
-		panic("FIXME " + v) // XXX
-		//err = g.gitRm(g.unvetted, join(id, defaultPayloadDir,
-		//	v))
-		//if err != nil {
-		//	return nil, err
-		//}
+		err = g.gitRm(g.unvetted, pijoin(relativeRmDir, v))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Handle metadata
@@ -1339,11 +1352,8 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 
 	// If there are no changes DO NOT update the record and reply with no
 	// changes.
-	o, err := g.gitDiff(g.unvetted)
-	if err != nil {
-		return nil, err
-	}
-	if len(o) == 0 {
+	// XXX change this to git status, diff does not see add/rm
+	if !g.gitHasChanges(g.unvetted) {
 		return nil, backend.ErrNoChanges
 	}
 
