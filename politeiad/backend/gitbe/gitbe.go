@@ -1415,6 +1415,12 @@ func (g *gitBackEnd) UpdateUnvettedRecord(token []byte, mdAppend []backend.Metad
 		return nil, err
 	}
 
+	// Check to make sure this prop is not vetted
+	_, err = os.Stat(pijoin(g.unvetted, hex.EncodeToString(token)))
+	if err == nil {
+		return nil, backend.ErrRecordFound
+	}
+
 	log.Tracef("updating %x", token)
 	// Do the work, if there is an error we must unwind git.
 	var errReturn error

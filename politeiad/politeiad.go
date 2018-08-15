@@ -303,6 +303,13 @@ func (p *politeia) updateUnvetted(w http.ResponseWriter, r *http.Request) {
 		convertFrontendMetadataStream(t.MDOverwrite),
 		convertFrontendFiles(t.FilesAdd), t.FilesDel)
 	if err != nil {
+		if err == backend.ErrRecordFound {
+			log.Errorf("%v update record found: %x",
+				remoteAddr(r), token)
+			p.respondWithUserError(w, v1.ErrorStatusRecordFound,
+				nil)
+			return
+		}
 		if err == backend.ErrNoChanges {
 			log.Errorf("%v update record no changes: %x",
 				remoteAddr(r), token)

@@ -16,6 +16,10 @@ var (
 	// ErrRecordNotFound is emitted when a record could not be found
 	ErrRecordNotFound = errors.New("record not found")
 
+	// ErrRecordFound is emitted when a record is found while none was
+	// expected.
+	ErrRecordFound = errors.New("record found")
+
 	// ErrFileNotFound is emitted when a file inside a record could not be
 	// found
 	ErrFileNotFound = errors.New("file not found")

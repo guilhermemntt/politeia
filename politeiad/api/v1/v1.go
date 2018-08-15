@@ -55,6 +55,7 @@ const (
 	ErrorStatusDuplicateFilename             ErrorStatusT = 12
 	ErrorStatusFileNotFound                  ErrorStatusT = 13
 	ErrorStatusNoChanges                     ErrorStatusT = 14
+	ErrorStatusRecordFound                   ErrorStatusT = 15
 
 	// Record status codes (set and get)
 	RecordStatusInvalid           RecordStatusT = 0 // Invalid status
@@ -92,6 +93,7 @@ var (
 		ErrorStatusDuplicateFilename:             "duplicate filename",
 		ErrorStatusFileNotFound:                  "file not found",
 		ErrorStatusNoChanges:                     "no changes in record",
+		ErrorStatusRecordFound:                   "record found",
 	}
 
 	// RecordStatus converts record status codes to human readable text.
