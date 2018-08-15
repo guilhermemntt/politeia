@@ -114,10 +114,11 @@ type MetadataStream struct {
 	Payload string // String encoded metadata
 }
 
-// Record is a permanent that includes the submitted files, metadata and
+// Record is a permanent Record that includes the submitted files, metadata and
 // internal metadata.
-type Record struct {
+type Record_ struct {
 	RecordMetadata RecordMetadata   // Internal metadata
+	Version        string           // Version of Files
 	Metadata       []MetadataStream // User provided metadata
 	Files          []File           // User provided files
 }
@@ -148,17 +149,17 @@ type Backend interface {
 		[]MetadataStream) error
 
 	// Get unvetted record
-	GetUnvetted([]byte) (*Record, error)
+	GetUnvetted([]byte) (*Record_, error)
 
 	// Get vetted record
-	GetVetted([]byte) (*Record, error)
+	GetVetted([]byte) (*Record_, error)
 
 	// Set unvetted record status
 	SetUnvettedStatus([]byte, MDStatusT, []MetadataStream,
-		[]MetadataStream) (*Record, error)
+		[]MetadataStream) (*Record_, error)
 
 	// Inventory retrieves various record records.
-	Inventory(uint, uint, bool) ([]Record, []Record, error)
+	Inventory(uint, uint, bool) ([]Record_, []Record_, error)
 
 	// Obtain plugin settings
 	GetPlugins() ([]Plugin, error)

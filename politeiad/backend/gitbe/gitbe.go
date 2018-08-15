@@ -1580,7 +1580,7 @@ func (g *gitBackEnd) UpdateVettedMetadata(token []byte, mdAppend []backend.Metad
 // returns a record record from the provided repo.
 //
 // This function must be called WITHOUT the lock held.
-func (g *gitBackEnd) getRecordLock(token []byte, repo string, includeFiles bool) (*backend.Record, error) {
+func (g *gitBackEnd) getRecordLock(token []byte, repo string, includeFiles bool) (*backend.Record_, error) {
 	// Lock filesystem
 	g.Lock()
 	defer g.Unlock()
@@ -1594,7 +1594,13 @@ func (g *gitBackEnd) getRecordLock(token []byte, repo string, includeFiles bool)
 // _getRecord loads a record from the current branch on the provided repo.
 //
 // This function must be called WITH the lock held.
-func (g *gitBackEnd) _getRecord(id, repo string, includeFiles bool) (*backend.Record, error) {
+func (g *gitBackEnd) _getRecord(id, repo string, includeFiles bool) (*backend.Record_, error) {
+	// Get latest version.
+	version, err := getLatest(pijoin(repo, id))
+	if err != nil {
+		return nil, err
+	}
+
 	// load MD
 	brm, err := loadMD(repo, id)
 	if err != nil {
@@ -1616,8 +1622,9 @@ func (g *gitBackEnd) _getRecord(id, repo string, includeFiles bool) (*backend.Re
 		}
 	}
 
-	return &backend.Record{
+	return &backend.Record_{
 		RecordMetadata: *brm,
+		Version:        version,
 		Metadata:       mds,
 		Files:          files,
 	}, nil
@@ -1627,7 +1634,7 @@ func (g *gitBackEnd) _getRecord(id, repo string, includeFiles bool) (*backend.Re
 // returns a record record from the provided repo.
 //
 // This function must be called WITH the lock held.
-func (g *gitBackEnd) getRecord(token []byte, repo string, includeFiles bool) (*backend.Record, error) {
+func (g *gitBackEnd) getRecord(token []byte, repo string, includeFiles bool) (*backend.Record_, error) {
 	id := hex.EncodeToString(token)
 	if repo == g.unvetted {
 		// git checkout id
@@ -1767,14 +1774,14 @@ func (g *gitBackEnd) fsck(path string) error {
 // unvetted/token directory.
 //
 // GetUnvetted satisfies the backend interface.
-func (g *gitBackEnd) GetUnvetted(token []byte) (*backend.Record, error) {
+func (g *gitBackEnd) GetUnvetted(token []byte) (*backend.Record_, error) {
 	return g.getRecordLock(token, g.unvetted, true)
 }
 
 // GetVetted returns the content of vetted/token directory.
 //
 // GetVetted satisfies the backend interface.
-func (g *gitBackEnd) GetVetted(token []byte) (*backend.Record, error) {
+func (g *gitBackEnd) GetVetted(token []byte) (*backend.Record_, error) {
 	return g.getRecordLock(token, g.vetted, true)
 }
 
@@ -1783,7 +1790,7 @@ func (g *gitBackEnd) GetVetted(token []byte) (*backend.Record, error) {
 // the call with the unvetted repo sitting in master.  The idea is that if this
 // function fails we can simply unwind it by calling a git stash.
 // Function must be called with the lock held.
-func (g *gitBackEnd) setUnvettedStatus(token []byte, status backend.MDStatusT, mdAppend, mdOverwrite []backend.MetadataStream) (*backend.Record, error) {
+func (g *gitBackEnd) setUnvettedStatus(token []byte, status backend.MDStatusT, mdAppend, mdOverwrite []backend.MetadataStream) (*backend.Record_, error) {
 	// git checkout id
 	id := hex.EncodeToString(token)
 	err := g.gitCheckout(g.unvetted, id)
@@ -1868,7 +1875,7 @@ func (g *gitBackEnd) setUnvettedStatus(token []byte, status backend.MDStatusT, m
 // returns the updated record if successful but without the Files compnonet.
 //
 // SetUnvettedStatus satisfies the backend interface.
-func (g *gitBackEnd) SetUnvettedStatus(token []byte, status backend.MDStatusT, mdAppend, mdOverwrite []backend.MetadataStream) (*backend.Record, error) {
+func (g *gitBackEnd) SetUnvettedStatus(token []byte, status backend.MDStatusT, mdAppend, mdOverwrite []backend.MetadataStream) (*backend.Record_, error) {
 	// Lock filesystem
 	g.Lock()
 	defer g.Unlock()
@@ -1906,7 +1913,7 @@ func (g *gitBackEnd) SetUnvettedStatus(token []byte, status backend.MDStatusT, m
 
 // Inventory returns an inventory of vetted and unvetted records.  If
 // includeFiles is set the content is also returned.
-func (g *gitBackEnd) Inventory(vettedCount, branchCount uint, includeFiles bool) ([]backend.Record, []backend.Record, error) {
+func (g *gitBackEnd) Inventory(vettedCount, branchCount uint, includeFiles bool) ([]backend.Record_, []backend.Record_, error) {
 	// Lock filesystem
 	g.Lock()
 	defer g.Unlock()
@@ -1922,7 +1929,7 @@ func (g *gitBackEnd) Inventory(vettedCount, branchCount uint, includeFiles bool)
 	}
 
 	// Strip non record directories
-	pr := make([]backend.Record, 0, len(files))
+	pr := make([]backend.Record_, 0, len(files))
 	for _, v := range files {
 		id := v.Name()
 		if !util.IsDigest(id) {
@@ -1945,7 +1952,7 @@ func (g *gitBackEnd) Inventory(vettedCount, branchCount uint, includeFiles bool)
 	if err != nil {
 		return nil, nil, err
 	}
-	br := make([]backend.Record, 0, len(branches))
+	br := make([]backend.Record_, 0, len(branches))
 	for _, id := range branches {
 		if !util.IsDigest(id) {
 			continue
