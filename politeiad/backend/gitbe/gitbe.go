@@ -497,7 +497,7 @@ func loadMD(path, id string) (*backend.RecordMetadata, error) {
 // unvetted/id or vetted/id.
 //
 // This function should be called with the lock held.
-func createMD(path, id string, status backend.MDStatusT, iteration uint64, hashes []*[sha256.Size]byte, token []byte) (*backend.RecordMetadata, error) {
+func createMD(path, id string, status backend.MDStatusT, iteration uint64, hashes []*[sha256.Size]byte) (*backend.RecordMetadata, error) {
 	// Create record metadata
 	m := *merkle.Root(hashes)
 	brm := backend.RecordMetadata{
@@ -506,7 +506,7 @@ func createMD(path, id string, status backend.MDStatusT, iteration uint64, hashe
 		Status:    status,
 		Merkle:    hex.EncodeToString(m[:]),
 		Timestamp: time.Now().Unix(),
-		Token:     hex.EncodeToString(token),
+		Token:     id,
 	}
 
 	err := updateMD(path, id, &brm)
@@ -1069,7 +1069,7 @@ func (g *gitBackEnd) newRecord(token []byte, metadata []backend.MetadataStream, 
 
 	// Save record metadata
 	brm, err := createMD(g.unvetted, id, backend.MDStatusUnvetted, 1,
-		hashes, token)
+		hashes)
 	if err != nil {
 		return nil, err
 	}
@@ -1242,21 +1242,12 @@ func (g *gitBackEnd) checkoutRecordBranch(id string) (bool, error) {
 	return found, nil
 }
 
-// updateRecord takes various parameters to update a record.  Note that this
-// function must be wrapped by a function that delivers the call with the
-// unvetted repo sitting in master.  The idea is that if this function fails we
-// can simply unwind it by calling a git stash.
-// Function must be called with the lock held.
-func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.MetadataStream, fa []file, filesDel []string) (*backend.RecordMetadata, error) {
-	// Checkout branch
-	id := hex.EncodeToString(token)
-	_, err := g.checkoutRecordBranch(id)
-	if err != nil {
-		return nil, err
-	}
-
-	// We now are sitting in branch id
-
+// updateRecord_ takes various parameters to update a record.  Note that this
+// function must be wrapped by a function that delivers the call with the repo
+// sitting in the correct branch/master.  The idea is that if this function
+// fails we can simply unwind it by calling a git stash.  Function must be
+// called with the lock held.
+func (g *gitBackEnd) updateRecord_(id string, mdAppend, mdOverwrite []backend.MetadataStream, fa []file, filesDel []string) (*backend.RecordMetadata, error) {
 	// Get version for relative git rm command later.
 	version, err := getLatest(pijoin(g.unvetted, id))
 	if err != nil {
@@ -1264,7 +1255,7 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 	}
 
 	// Load MD
-	log.Tracef("updating %x", token)
+	log.Tracef("updating %v", id)
 	brm, err := loadMD(g.unvetted, id)
 	if err != nil {
 		return nil, err
@@ -1359,7 +1350,7 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 
 	// Update record metadata
 	brmNew, err := createMD(g.unvetted, id,
-		backend.MDStatusIterationUnvetted, brm.Iteration+1, hashes, token)
+		backend.MDStatusIterationUnvetted, brm.Iteration+1, hashes)
 	if err != nil {
 		return nil, err
 	}
@@ -1381,7 +1372,12 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend, mdOverwrite []backend.
 	return brmNew, nil
 }
 
-func (g *gitBackEnd) UpdateUnvettedRecord(token []byte, mdAppend []backend.MetadataStream, mdOverwrite []backend.MetadataStream, filesAdd []backend.File, filesDel []string) (*backend.RecordMetadata, error) {
+// updateRecord puts the correct git repo in the correct state (branch or
+// master) and then updates the the record content. It returns a version if an
+// update occured on master.
+//
+// Must be called WITHOUT the lock held.
+func (g *gitBackEnd) updateRecord(token []byte, mdAppend []backend.MetadataStream, mdOverwrite []backend.MetadataStream, filesAdd []backend.File, filesDel []string, master bool) (*backend.RecordMetadata, error) {
 	// Send in a single metadata array to verify there are no dups.
 	allMD := append(mdAppend, mdOverwrite...)
 	fa, err := verifyContent(allMD, filesAdd, filesDel)
@@ -1415,16 +1411,33 @@ func (g *gitBackEnd) UpdateUnvettedRecord(token []byte, mdAppend []backend.Metad
 		return nil, err
 	}
 
-	// Check to make sure this prop is not vetted
-	_, err = os.Stat(pijoin(g.unvetted, hex.EncodeToString(token)))
-	if err == nil {
-		return nil, backend.ErrRecordFound
+	id := hex.EncodeToString(token)
+	// Put repo in correct branch
+	if master {
+		// Vetted path
+		panic("not yet")
+	} else {
+		// Unvetted path
+
+		// Check to make sure this prop is not vetted
+		_, err = os.Stat(pijoin(g.unvetted, id))
+		if err == nil {
+			return nil, backend.ErrRecordFound
+		}
+
+		// Checkout branch
+		_, err := g.checkoutRecordBranch(id)
+		if err != nil {
+			return nil, err
+		}
+
+		// We now are sitting in branch id
+		log.Tracef("updating unvetted %v", id)
 	}
 
-	log.Tracef("updating %x", token)
 	// Do the work, if there is an error we must unwind git.
 	var errReturn error
-	brm, err := g.updateRecord(token, mdAppend, mdOverwrite, fa, filesDel)
+	brm, err := g.updateRecord_(id, mdAppend, mdOverwrite, fa, filesDel)
 	if err == backend.ErrNoChanges {
 		brm = nil
 		errReturn = err
@@ -1448,6 +1461,22 @@ func (g *gitBackEnd) UpdateUnvettedRecord(token []byte, mdAppend []backend.Metad
 	}
 
 	return brm, errReturn
+}
+
+// UpdateVettedRecord updates the vetted record.
+//
+// This function is part of the interface.
+func (g *gitBackEnd) UpdateVettedRecord(token []byte, mdAppend []backend.MetadataStream, mdOverwrite []backend.MetadataStream, filesAdd []backend.File, filesDel []string) (*backend.RecordMetadata, error) {
+	return g.updateRecord(token, mdAppend, mdOverwrite, filesAdd, filesDel,
+		true)
+}
+
+// UpdateUnvettedRecord updates the unvetted record.
+//
+// This function is part of the interface.
+func (g *gitBackEnd) UpdateUnvettedRecord(token []byte, mdAppend []backend.MetadataStream, mdOverwrite []backend.MetadataStream, filesAdd []backend.File, filesDel []string) (*backend.RecordMetadata, error) {
+	return g.updateRecord(token, mdAppend, mdOverwrite, filesAdd, filesDel,
+		false)
 }
 
 // updateVettedMetadata updates metadata in the unvetted repo and pushes it
