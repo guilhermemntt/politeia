@@ -145,11 +145,11 @@ func join(elements ...string) string {
 func getLatest(dir string) (string, error) {
 	files, err := ioutil.ReadDir(dir)
 	if err != nil {
-		return "", err
+		return "", backend.ErrRecordNotFound
 	}
 
 	if len(files) == 0 {
-		return "", os.ErrNotExist
+		return "", backend.ErrRecordNotFound
 	}
 
 	// We expect only numeric filenames
