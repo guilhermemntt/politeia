@@ -75,7 +75,10 @@ func usage() {
 		"<id>\n")
 	fmt.Fprintf(os.Stderr, "  setunvettedstatus - Set unvetted record "+
 		"status <publish|censor> <id> [actionmdid:metadata]...\n")
-	fmt.Fprintf(os.Stderr, "  update            - Update unvetted record "+
+	fmt.Fprintf(os.Stderr, "  updateunvetted    - Update unvetted record "+
+		"[actionmdid:metadata]... <actionfile:filename>... "+
+		"token:<token>\n")
+	fmt.Fprintf(os.Stderr, "  updatevetted      - Update vetted record "+
 		"[actionmdid:metadata]... <actionfile:filename>... "+
 		"token:<token>\n")
 	fmt.Fprintf(os.Stderr, "\n")
@@ -593,7 +596,7 @@ func newRecord() error {
 	return nil
 }
 
-func updateRecord() error {
+func updateRecord(vetted bool) error {
 	flags := flag.Args()[1:] // Chop off action.
 
 	// Create New command
@@ -720,8 +723,11 @@ func updateRecord() error {
 	if err != nil {
 		return err
 	}
-	r, err := c.Post(*rpchost+v1.UpdateUnvettedRoute, "application/json",
-		bytes.NewReader(b))
+	route := *rpchost + v1.UpdateUnvettedRoute
+	if vetted {
+		route = *rpchost + v1.UpdateVettedRoute
+	}
+	r, err := c.Post(route, "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -738,6 +744,7 @@ func updateRecord() error {
 	bodyBytes := util.ConvertBodyToByteArray(r.Body, *printJson)
 
 	var reply v1.UpdateUnvettedReply
+	// XXX make the reply generic
 	err = json.Unmarshal(bodyBytes, &reply)
 	if err != nil {
 		return fmt.Errorf("Could node unmarshal UpdateReply: %v", err)
@@ -1178,8 +1185,10 @@ func _main() error {
 				return getVetted()
 			case "setunvettedstatus":
 				return setUnvettedStatus()
-			case "update":
-				return updateRecord()
+			case "updateunvetted":
+				return updateRecord(false)
+			case "updatevetted":
+				return updateRecord(true)
 			default:
 				return fmt.Errorf("invalid action: %v", a)
 			}

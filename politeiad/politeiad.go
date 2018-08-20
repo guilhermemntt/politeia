@@ -353,6 +353,85 @@ func (p *politeia) updateUnvetted(w http.ResponseWriter, r *http.Request) {
 	util.RespondWithJSON(w, http.StatusOK, reply)
 }
 
+func (p *politeia) updateVetted(w http.ResponseWriter, r *http.Request) {
+	var t v1.UpdateUnvetted
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&t); err != nil {
+		p.respondWithUserError(w, v1.ErrorStatusInvalidRequestPayload,
+			nil)
+		return
+	}
+
+	challenge, err := hex.DecodeString(t.Challenge)
+	if err != nil || len(challenge) != v1.ChallengeSize {
+		log.Errorf("%v updateRecord: invalid challenge", remoteAddr(r))
+		p.respondWithUserError(w, v1.ErrorStatusInvalidChallenge, nil)
+		return
+	}
+
+	// Validate token
+	token, err := util.ConvertStringToken(t.Token)
+	if err != nil {
+		p.respondWithUserError(w, v1.ErrorStatusInvalidRequestPayload, nil)
+		return
+	}
+
+	log.Infof("Update record submitted %v: %x", remoteAddr(r), token)
+
+	rm, err := p.backend.UpdateVettedRecord(token,
+		convertFrontendMetadataStream(t.MDAppend),
+		convertFrontendMetadataStream(t.MDOverwrite),
+		convertFrontendFiles(t.FilesAdd), t.FilesDel)
+	if err != nil {
+		if err == backend.ErrRecordFound {
+			log.Errorf("%v update record found: %x",
+				remoteAddr(r), token)
+			p.respondWithUserError(w, v1.ErrorStatusRecordFound,
+				nil)
+			return
+		}
+		if err == backend.ErrNoChanges {
+			log.Errorf("%v update record no changes: %x",
+				remoteAddr(r), token)
+			p.respondWithUserError(w, v1.ErrorStatusNoChanges, nil)
+			return
+		}
+		// Check for content error.
+		if contentErr, ok := err.(backend.ContentVerificationError); ok {
+			log.Errorf("%v update record content error: %v",
+				remoteAddr(r), contentErr)
+			p.respondWithUserError(w, contentErr.ErrorCode,
+				contentErr.ErrorContext)
+			return
+		}
+
+		// Generic internal error.
+		errorCode := time.Now().Unix()
+		log.Errorf("%v Update record error code %v: %v", remoteAddr(r),
+			errorCode, err)
+		p.respondWithServerError(w, errorCode)
+		return
+	}
+
+	// Prepare reply.
+	signature := p.identity.SignMessage([]byte(rm.Merkle + rm.Token))
+
+	response := p.identity.SignMessage(challenge)
+	reply := v1.UpdateUnvettedReply{
+		Response: hex.EncodeToString(response[:]),
+		CensorshipRecord: v1.CensorshipRecord{
+			Merkle:    rm.Merkle,
+			Token:     rm.Token,
+			Signature: hex.EncodeToString(signature[:]),
+		},
+	}
+
+	log.Infof("Update record %v: token %v", remoteAddr(r),
+		reply.CensorshipRecord.Token)
+
+	util.RespondWithJSON(w, http.StatusOK, reply)
+}
+
 func (p *politeia) getUnvetted(w http.ResponseWriter, r *http.Request) {
 	var t v1.GetUnvetted
 	decoder := json.NewDecoder(r.Body)
@@ -891,6 +970,8 @@ func _main() error {
 		permissionPublic)
 	p.addRoute(http.MethodPost, v1.UpdateUnvettedRoute, p.updateUnvetted,
 		permissionPublic)
+	p.addRoute(http.MethodPost, v1.UpdateVettedRoute, p.updateVetted,
+		permissionPublic) // XXX think about this
 	p.addRoute(http.MethodPost, v1.GetUnvettedRoute, p.getUnvetted,
 		permissionPublic)
 	p.addRoute(http.MethodPost, v1.GetVettedRoute, p.getVetted,

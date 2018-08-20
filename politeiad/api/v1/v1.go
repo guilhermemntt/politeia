@@ -25,6 +25,7 @@ const (
 	IdentityRoute             = "/v1/identity/"       // Retrieve identity
 	NewRecordRoute            = "/v1/newrecord/"      // New record
 	UpdateUnvettedRoute       = "/v1/updateunvetted/" // Update unvetted record
+	UpdateVettedRoute         = "/v1/updatevetted/"   // Update vetted record
 	UpdateVettedMetadataRoute = "/v1/updatevettedmd/" // Update vetted metadata
 	GetUnvettedRoute          = "/v1/getunvetted/"    // Retrieve unvetted record
 	GetVettedRoute            = "/v1/getvetted/"      // Retrieve vetted record

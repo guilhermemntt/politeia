@@ -30,6 +30,7 @@ import (
 	"github.com/decred/politeia/politeiad/api/v1/mime"
 	"github.com/decred/politeia/politeiad/backend"
 	"github.com/decred/politeia/util"
+	filesystem "github.com/otiai10/copy"
 	"github.com/robfig/cron"
 	"github.com/subosito/norma"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -164,6 +165,28 @@ func getLatest(dir string) (string, error) {
 	sort.Ints(versions)
 
 	return strconv.FormatInt(int64(versions[len(versions)-1]), 10), nil
+}
+
+// getNext looks at the current latest version and increments the count by one.
+// This function must be called with the lock held.
+func getNext(dir string) (string, string, error) {
+	v, err := getLatest(dir)
+	if err != nil {
+		return "", "", backend.ErrRecordNotFound
+	}
+
+	vv, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return "", "", err
+	}
+	vv++
+
+	// Sanity
+	if vv <= 0 {
+		return "", "", fmt.Errorf("invalid version")
+	}
+
+	return v, strconv.FormatInt(vv, 10), nil
 }
 
 // _joinLatest joins the provided path elements and adds the latest version of
@@ -1413,9 +1436,68 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend []backend.MetadataStrea
 
 	id := hex.EncodeToString(token)
 	// Put repo in correct branch
+	var (
+		brm       *backend.RecordMetadata
+		errReturn error
+	)
 	if master {
 		// Vetted path
-		panic("not yet")
+
+		// Check to make sure this prop is vetted
+		dir := pijoin(g.unvetted, id)
+		_, err = os.Stat(dir)
+		if err != nil {
+			return nil, backend.ErrRecordNotFound
+		}
+
+		// Get old and new version
+		oldV, newV, err := getNext(dir)
+		if err != nil {
+			return nil, err
+		}
+
+		// Checkout temporary branch
+		idTmp := id + "_tmp"
+		err = g.gitNewBranch(g.unvetted, idTmp)
+		if err != nil {
+			return nil, err
+		}
+
+		// Copy entire prop
+		log.Debugf("cp %v, %v", pijoin(g.unvetted, id, oldV),
+			pijoin(g.unvetted, id, newV))
+		err = filesystem.Copy(pijoin(g.unvetted, id, oldV),
+			pijoin(g.unvetted, id, newV))
+		if err != nil {
+			return nil, err
+		}
+
+		// defer branch delete
+		log.Tracef("updating vetted %v", id)
+
+		// Do the work, if there is an error we must unwind git.
+		brm, err = g.updateRecord_(id, mdAppend, mdOverwrite, fa, filesDel)
+		if err == backend.ErrNoChanges {
+			brm = nil
+			errReturn = err
+		} else if err != nil {
+			// git stash
+			err2 := g.gitStash(g.unvetted)
+			if err2 != nil {
+				// We are in trouble! Consider a panic.
+				log.Errorf("gitStash: %v", err2)
+				return nil, err2
+			}
+
+			brm = nil
+			errReturn = err
+		}
+
+		// create and rebase PR
+		err = g.rebasePR(idTmp)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		// Unvetted path
 
@@ -1433,27 +1515,25 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend []backend.MetadataStrea
 
 		// We now are sitting in branch id
 		log.Tracef("updating unvetted %v", id)
-	}
 
-	// Do the work, if there is an error we must unwind git.
-	var errReturn error
-	brm, err := g.updateRecord_(id, mdAppend, mdOverwrite, fa, filesDel)
-	if err == backend.ErrNoChanges {
-		brm = nil
-		errReturn = err
-	} else if err != nil {
-		// git stash
-		err2 := g.gitStash(g.unvetted)
-		if err2 != nil {
-			// We are in trouble! Consider a panic.
-			log.Errorf("gitStash: %v", err2)
-			return nil, err2
+		// Do the work, if there is an error we must unwind git.
+		brm, err = g.updateRecord_(id, mdAppend, mdOverwrite, fa, filesDel)
+		if err == backend.ErrNoChanges {
+			brm = nil
+			errReturn = err
+		} else if err != nil {
+			// git stash
+			err2 := g.gitStash(g.unvetted)
+			if err2 != nil {
+				// We are in trouble! Consider a panic.
+				log.Errorf("gitStash: %v", err2)
+				return nil, err2
+			}
+
+			brm = nil
+			errReturn = err
 		}
-
-		brm = nil
-		errReturn = err
 	}
-
 	// git checkout master
 	err = g.gitCheckout(g.unvetted, "master")
 	if err != nil {
