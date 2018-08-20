@@ -1048,7 +1048,7 @@ func (g *gitBackEnd) newRecord(token []byte, metadata []backend.MetadataStream, 
 	}
 
 	// Process files.
-	path := pijoin(g.unvetted, id, "0", defaultPayloadDir)
+	path := pijoin(g.unvetted, id, "1", defaultPayloadDir)
 	err = os.MkdirAll(path, 0774)
 	if err != nil {
 		return nil, err
@@ -1471,9 +1471,13 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend []backend.MetadataStrea
 		if err != nil {
 			return nil, err
 		}
+		err = g.gitAdd(g.unvetted, pijoin(g.unvetted, id, newV))
+		if err != nil {
+			return nil, err
+		}
 
 		// defer branch delete
-		log.Tracef("updating vetted %v", id)
+		log.Tracef("updating vetted %v -> %v %v", oldV, newV, id)
 
 		// Do the work, if there is an error we must unwind git.
 		brm, err = g.updateRecord_(id, mdAppend, mdOverwrite, fa, filesDel)
@@ -1491,12 +1495,12 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend []backend.MetadataStrea
 
 			brm = nil
 			errReturn = err
-		}
-
-		// create and rebase PR
-		err = g.rebasePR(idTmp)
-		if err != nil {
-			return nil, err
+		} else {
+			// create and rebase PR
+			err = g.rebasePR(idTmp)
+			if err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		// Unvetted path
@@ -1534,6 +1538,7 @@ func (g *gitBackEnd) updateRecord(token []byte, mdAppend []backend.MetadataStrea
 			errReturn = err
 		}
 	}
+
 	// git checkout master
 	err = g.gitCheckout(g.unvetted, "master")
 	if err != nil {
